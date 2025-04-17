@@ -1,107 +1,211 @@
-!pip install mediapipe opencv-python
-import cv2
-import mediapipe as mp
+import tensorflow as tf
+import tensorflow_hub as hub
 import numpy as np
+import cv2
 import time
+import math
 import tkinter as tk
-from tkinter import messagebox
+from threading import Thread
+import pandas as pd
+import os
+import smtplib
+from email.message import EmailMessage
 
-# Initialize video capture
-cap = cv2.VideoCapture(0)
+# Load MoveNet Model
+movenet = hub.load("https://tfhub.dev/google/movenet/singlepose/lightning/4")
 
-# Initialize variables
-start_time = None
-counter = 0
+# Define keypoint names
+keypoint_names = ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear', 'left_shoulder', 'right_shoulder',
+                  'left_elbow', 'right_elbow', 'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
+                  'left_knee', 'right_knee', 'left_ankle', 'right_ankle']
 
-# Function to show popup notification
-def show_popup():
-    root = tk.Tk()
-    root.withdraw()
-    messagebox.showwarning("Notification", "Adjust your position")
+# Define pose connections for visualization
+connections = [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14),
+               (14, 16)]
+
+# Excel file path
+file_path = r"C:\Users\sreen\PycharmProjects\1\posture_data.xlsx"
+
+# Ensure Excel file exists
+if not os.path.exists(file_path):
+    df = pd.DataFrame(columns=["Timestamp", "Posture Angle", "Alert Count"])
+    df.to_excel(file_path, index=False)
+    print(f"Created new Excel file at {file_path}")
+else:
+    print(f"Excel file already exists at {file_path}")
+
+
+# Function to send Excel file via Gmail
+def send_excel_via_gmail():
+    sender_email = "sreenathcirimala@gmail.com"
+    receiver_email = "mayanashakeerkhan@gmail.com"
+    app_password = "lpay vuww bmwd mnqr"
+    subject = "Posture Data Excel File"
+    body = "Hi, please find the attached posture data Excel file."
+
+    # Create the email message
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+    msg.set_content(body)
+
+    # Attach the Excel file
+    with open(file_path, 'rb') as f:
+        file_data = f.read()
+        file_name = os.path.basename(file_path)
+
+    msg.add_attachment(file_data,
+                       maintype='application',
+                       subtype='vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                       filename=file_name)
+
+    # Send the email
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+        smtp.login(sender_email, app_password)
+        smtp.send_message(msg)
+        print("✅ Email sent with Excel file attached.")
+
 
 # Function to calculate angle between three points
 def calculate_angle(a, b, c):
-    a = np.array(a)  # First point
-    b = np.array(b)  # Second point
-    c = np.array(c)  # Third point
-    
-    radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
-    angle = np.abs(radians * 180.0 / np.pi)
-    
-    if angle > 180.0:
-        angle = 360.0 - angle
-        
-    return angle
+    a = np.array(a)
+    b = np.array(b)
+    c = np.array(c)
 
-# Initialize Mediapipe
-mp_drawing = mp.solutions.drawing_utils
-mp_pose = mp.solutions.pose
+    ba = a - b
+    bc = c - b
 
-# Setup Mediapipe instance
-with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
-    while cap.isOpened():
-        ret, frame = cap.read()
-        
-        # Recolor image to RGB
-        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image.flags.writeable = False
-        
-        # Make detection
-        results = pose.process(image)
-        
-        # Recolor back to BGR
-        image.flags.writeable = True
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        
-        # Extract landmarks
+    cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+
+    # Ensure the cosine value is within the valid range for arccos
+    cosine_angle = np.clip(cosine_angle, -1.0, 1.0)
+
+    # Calculate the angle in radians
+    angle_radians = np.arccos(cosine_angle)
+
+    # Convert radians to degrees using math.degrees
+    angle_degrees = math.degrees(angle_radians)
+
+    return angle_degrees
+
+
+# Function to detect pose
+def detect_pose(frame):
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    frame_resized = tf.image.resize_with_pad(tf.expand_dims(frame_rgb, axis=0), 192, 192)
+    frame_np = frame_resized.numpy().astype(np.int32)
+    outputs = movenet.signatures["serving_default"](tf.constant(frame_np))
+    return outputs['output_0'].numpy()
+
+
+# Function to show a notification popup
+def show_popup():
+    def popup():
+        root = tk.Tk()
+        root.title("Posture Alert")
+        root.geometry("300x100")
+        label = tk.Label(root, text="⚠ Maintain good posture!", font=("Arial", 14))
+        label.pack(pady=20)
+        root.after(3000, root.destroy)  # Auto close after 3 seconds
+        root.mainloop()
+
+    popup_thread = Thread(target=popup)
+    popup_thread.start()
+
+
+# Function to save posture data to Excel
+def save_to_excel(angle, count):
+    df = pd.read_excel(file_path)
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    new_data = pd.DataFrame([[timestamp, angle, count]], columns=["Timestamp", "Posture Angle", "Alert Count"])
+    df = pd.concat([df, new_data], ignore_index=True)
+    df.to_excel(file_path, index=False)
+    print(f"Data saved: {timestamp}, Angle: {angle}, Alerts: {count}")
+
+
+# Function to visualize pose keypoints and detect angles
+def visualize_pose(frame, keypoints):
+    global start_time, counter
+
+    keypoints = np.array(keypoints)
+    if keypoints.shape == (1, 1, 17, 3):
+        keypoints = keypoints[0, 0]
+
         try:
-            landmarks = results.pose_landmarks.landmark
-            
-            # Get coordinates
-            shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
-                        landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
-            hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x,
-                   landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y]
-            knee = [landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].x,
-                    landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].y]
-            
-            # Calculate angle
+            # Extract keypoints for left shoulder, hip, and knee
+            shoulder = [keypoints[5, 1] * frame.shape[1], keypoints[5, 0] * frame.shape[0]]
+            hip = [keypoints[11, 1] * frame.shape[1], keypoints[11, 0] * frame.shape[0]]
+            knee = [keypoints[13, 1] * frame.shape[1], keypoints[13, 0] * frame.shape[0]]
+
+            # Calculate the angle
             angle = calculate_angle(shoulder, hip, knee)
-            
-            # Visualize angle
-            cv2.putText(image, str(angle), 
-                        tuple(np.multiply(hip, [640, 480]).astype(int)), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
-            
-            # Check timer
+
+            # Display angle on frame
+            cv2.putText(frame, str(int(angle)), (int(hip[0]), int(hip[1])),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+
+            # Timer logic for posture correction
             if angle < 158:
                 if start_time is None:
-                    start_time = time.time()  # Start the timer.
+                    start_time = time.time()
                 else:
                     elapsed_time = time.time() - start_time
-                    if elapsed_time >= 5:  # Check if 5 seconds have passed.
+                    if elapsed_time >= 5:
                         show_popup()
                         counter += 1
-                        print(counter)
-                        start_time = None  # Reset the timer.
+                        print(f"Posture alert count: {counter}")
+                        save_to_excel(int(angle), counter)
+                        start_time = None
             else:
-                start_time = None  # Reset the timer when angle is above 158.
-        
-        except:
-            pass
+                start_time = None
 
-        # Render detections
-        mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
-                                  mp_drawing.DrawingSpec(color=(245, 117, 66), thickness=2, circle_radius=2), 
-                                  mp_drawing.DrawingSpec(color=(245, 66, 230), thickness=2, circle_radius=2))
-        
-        # Display the image
-        cv2.imshow('Mediapipe Feed', image)
-        
-        # Break the loop on 'q' key press
-        if cv2.waitKey(10) & 0xFF == ord('q'):
-            break
-    
-    # Release the capture and destroy all windows
-    cap.release()
-    cv2.destroyAllWindows()
+        except Exception as e:
+            print("Error in keypoint processing:", e)
+
+        # Draw keypoints
+        for kp in keypoints:
+            x, y = int(kp[1] * frame.shape[1]), int(kp[0] * frame.shape[0])
+            cv2.circle(frame, (x, y), 8, (255, 0, 0), -1)
+
+        # Draw connections
+        for connection in connections:
+            start = (int(keypoints[connection[0], 1] * frame.shape[1]),
+                     int(keypoints[connection[0], 0] * frame.shape[0]))
+            end = (int(keypoints[connection[1], 1] * frame.shape[1]),
+                   int(keypoints[connection[1], 0] * frame.shape[0]))
+            cv2.line(frame, start, end, (0, 0, 255), 3)
+
+    return frame
+
+
+# Open webcam
+cap = cv2.VideoCapture(0)
+
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    exit()
+
+# Variables for timer logic
+start_time = None
+counter = 0
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to capture frame.")
+        break
+
+    keypoints = detect_pose(frame)
+    frame_with_keypoints = visualize_pose(frame, keypoints)
+
+    cv2.imshow('Pose Detection', frame_with_keypoints)
+
+    # Press 'q' to exit
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Send email after detecting posture alerts
+send_excel_via_gmail()
+cap.release()
+cv2.destroyAllWindows()
